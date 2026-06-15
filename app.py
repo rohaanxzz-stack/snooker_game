@@ -16,24 +16,27 @@ if "score" not in st.session_state:
     st.session_state.turn = "User"        # User executes the first break shot
     st.session_state.target_type = "Red"  # Rules dictate opening with a Red ball
 
-# Synchronize backend structural state via standard query parameters
-query_params = st.query_params
-if "scored_points" in query_params:
-    pts = int(query_params["scored_points"])
-    current_turn = query_params.get("active_turn", "User")
-    st.session_state.score[current_turn] += pts
-    st.session_state.target_type = query_params.get("next_target", "Red")
-    st.session_state.turn = query_params.get("switch_turn", current_turn)
-    st.query_params.clear()
-    st.toast(f"🎱 {current_turn} scored {pts} point(s)! Next required target: {st.session_state.target_type}")
-elif "foul_occured" in query_params:
-    foul_by = query_params["foul_occured"]
-    penalty_receiver = "CPU_AI_Bot" if foul_by == "User" else "User"
-    st.session_state.score[penalty_receiver] += 4  # Standard minimum regulation foul penalty points
-    st.session_state.turn = "User"                 # Hand match advantage back to human user
-    st.session_state.target_type = "Red"
-    st.query_params.clear()
-    st.toast(f"⚠️ SCRATCH FOUL by {foul_by}! 4 Points awarded to {penalty_receiver}.")
+# Synchronize backend structural state via standard query parameters safely
+try:
+    query_params = st.query_params
+    if "scored_points" in query_params:
+        pts = int(query_params["scored_points"])
+        current_turn = query_params.get("active_turn", "User")
+        st.session_state.score[current_turn] += pts
+        st.session_state.target_type = query_params.get("next_target", "Red")
+        st.session_state.turn = query_params.get("switch_turn", current_turn)
+        st.query_params.clear()
+        st.toast(f"🎱 {current_turn} scored {pts} point(s)! Next required target: {st.session_state.target_type}")
+    elif "foul_occured" in query_params:
+        foul_by = query_params["foul_occured"]
+        penalty_receiver = "CPU_AI_Bot" if foul_by == "User" else "User"
+        st.session_state.score[penalty_receiver] += 4  # Standard minimum regulation foul penalty points
+        st.session_state.turn = "User"                 # Hand match advantage back to human user
+        st.session_state.target_type = "Red"
+        st.query_params.clear()
+        st.toast(f"⚠️ SCRATCH FOUL by {foul_by}! 4 Points awarded to {penalty_receiver}.")
+except Exception:
+    pass
 
 # --- Native TensorFlow Brain Architecture ---
 # Input Layer Vectors (6 dimensions): Cue Ball (X, Z), Closest Target Object (X, Z), Vector to Closest Pocket (X, Z)
@@ -102,7 +105,7 @@ html_3d_tf_snooker = f"""
             🎯 <b>Match Turn:</b> <span style="color:#00aaff; font-weight:bold;">{st.session_state.turn}</span><br>
             🔴 <b>Required Legal Target Type:</b> <span style="color:#ff3333; font-weight:bold;">{st.session_state.target_type}</span><br>
             <hr style="border:0; border-top:1px solid #333; margin:10px 0;">
-            🎮 <b>User Strike Controls:</b><br>
+            <b>User Strike Controls:</b><br>
             • Rotate Cue Stick: Move via <span class="key-badge">A</span> / <span class="key-badge">D</span> or <span class="key-badge">◀</span> / <span class="key-badge">▶</span><br>
             • Fire Cue Stroke Acceleration: Tap <span class="key-badge">SPACEBAR</span>
         </div>
@@ -116,7 +119,7 @@ html_3d_tf_snooker = f"""
         // Import the compiled TensorFlow tensor weights directly inside the JavaScript ecosystem context
         const tfBrainTensors = {brain_tensors_json};
 
-        // Embedded 60 FPS Feed-Forward Matrix Multiplier Inference Function
+        // FIXED: Layer 2 loop limits updated to match 64 hidden nodes instead of 6 input arrays to prevent vector NaN drops
         function evaluateNeuralNetworkAction(ballX, ballZ, targetX, targetZ, pocketX, pocketZ) {{
             let inputState = [ballX/34, ballZ/17, targetX/34, targetZ/17, pocketX/34, pocketZ/17];
             
@@ -134,12 +137,11 @@ html_3d_tf_snooker = f"""
             let qValuesMatrix = [];
             for (let j = 0; j < 16; j++) {{
                 let outputVal = tfBrainTensors.b2[j];
-                for (let i = 0; i < 6; i++) {{
+                for (let i = 0; i < 64; i++) {{
                     outputVal += hiddenLayer[i] * tfBrainTensors.w2[i][j];
                 }}
                 qValuesMatrix.push(outputVal);
             }}
-            // Return index with the optimal expected return calculation score
             return qValuesMatrix.indexOf(Math.max(...qValuesMatrix));
         }}
 
@@ -170,7 +172,7 @@ html_3d_tf_snooker = f"""
         mainTableCloth.position.y = -1; mainTableCloth.receiveShadow = true; scene.add(mainTableCloth);
 
         // Hardwood Side Rails
-        const cushionBorder1 = new THREE.Mesh(new THREE.BoxGeometry(70, 2.4, 1.5), mahoganyMaterial); cushionBorder1.position.set(0, 0.2, 17.75); cushionBorder1.castShadow = true; scene.add(cushBorder1);
+        const cushionBorder1 = new THREE.Mesh(new THREE.BoxGeometry(70, 2.4, 1.5), mahoganyMaterial); cushionBorder1.position.set(0, 0.2, 17.75); cushionBorder1.castShadow = true; scene.add(cushionBorder1);
         const cushionBorder2 = new THREE.Mesh(new THREE.BoxGeometry(70, 2.4, 1.5), mahoganyMaterial); cushionBorder2.position.set(0, 0.2, -17.75); cushionBorder2.castShadow = true; scene.add(cushionBorder2);
 
         // Standard Match Pocket Matrices Locations
@@ -235,7 +237,6 @@ html_3d_tf_snooker = f"""
         window.addEventListener('keydown', e => {{ if(e.key in inputsStateMap) inputsStateMap[e.key] = true; }});
         window.addEventListener('keyup', e => {{ if(e.key in inputsStateMap) inputsStateMap[e.key] = false; }});
 
-        // Communication gateway callback to parent Streamlit execution container
         function routeScoreState(paramRoute, parameterData) {{
             const url = new URL(window.parent.location.href);
             url.searchParams.set(paramRoute, parameterData.points || "1");
@@ -411,16 +412,19 @@ st.markdown("High-performance rendering running **Three.js WebGL graphics pipeli
 # Statistical Scoreboard Arrays Metrics Layout
 col1, col2, col3 = st.columns([1, 1, 2])
 with col1:
-    st.metric("Your Dynamic Score Matrix", st.session_state.score["User"])
+    st.metric("Your Score", st.session_state.score["User"])
 with col2:
-    st.metric("TensorFlow AI Bot Score", st.session_state.score["CPU_AI_Bot"])
+    st.metric("TensorFlow Bot Score", st.session_state.score["CPU_AI_Bot"])
 with col3:
     st.write("##")
     if st.button("🔄 Restart Tournament Frame Match Assembly", use_container_width=True):
         st.session_state.score = {"User": 0, "CPU_AI_Bot": 0}
         st.session_state.turn = "User"
         st.session_state.target_type = "Red"
-        st.query_params.clear()
+        try:
+            st.query_params.clear()
+        except Exception:
+            pass
         st.rerun()
 
 # Embed the interactive full width viewport block assembly securely

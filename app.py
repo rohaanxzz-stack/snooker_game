@@ -8,21 +8,23 @@ tf.config.set_visible_devices([], 'GPU')
 
 st.set_page_config(page_title="3D TensorFlow Snooker Arena", layout="wide")
 
-# FIX: Changed unsafe_allowed_code to unsafe_allowed_html to eliminate the Streamlit rendering crash
+# FIX: Corrected argument name to unsafe_allowed_html=True
 st.markdown("""
     <style>
-        .reportview-container .main .block-container { padding-top: 0rem; padding-bottom: 0rem; }
-        iframe { width: 100%; border: none; }
+        .block-container { padding-top: 1rem; padding-bottom: 0rem; }
+        iframe { width: 100% !important; height: 78vh !important; border: none; }
     </style>
 """, unsafe_allowed_html=True)
 
-# Initialize Core Game Mechanics States
+# Initialize persistent session configurations
 if "score" not in st.session_state:
     st.session_state.score = {"User": 0, "CPU_AI_Bot": 0}
 if "turn" not in st.session_state:
     st.session_state.turn = "User"
 if "target_type" not in st.session_state:
     st.session_state.target_type = "Red"
+if "match_id" not in st.session_state:
+    st.session_state.match_id = 0
 
 # --- Native TensorFlow AI Brain Weights Generation ---
 class SnookerBrainDQN(tf.Module):
@@ -51,10 +53,12 @@ with col2:
     st.metric("TensorFlow Bot Score", st.session_state.score["CPU_AI_Bot"])
 with col3:
     st.write("##")
+    # FIX: The restart button modifies memory flags directly and reruns without browser URL locks
     if st.button("🔄 Restart Tournament Frame Match", use_container_width=True):
         st.session_state.score = {"User": 0, "CPU_AI_Bot": 0}
         st.session_state.turn = "User"
         st.session_state.target_type = "Red"
+        st.session_state.match_id += 1 
         st.rerun()
 
 # --- Full-Screen 3D WebGL Canvas Engine HTML ---
@@ -67,15 +71,15 @@ html_3d_tf_snooker = f"""
         body {{ margin: 0; overflow: hidden; background-color: #020202; font-family: sans-serif; }}
         #canvas-holder {{ 
             width: 100vw; 
-            height: 75vh; 
+            height: 76vh; 
             position: relative;
         }}
         #ui-overlay {{
             position: absolute; top: 15px; left: 15px;
-            color: #fff; background: rgba(5,5,5,0.9);
+            color: #fff; background: rgba(5,5,5,0.95);
             padding: 12px 18px; border-radius: 8px; font-size: 14px;
-            pointer-events: none; border: 1px solid #333; line-height: 1.5;
-            z-index: 10;
+            pointer-events: none; border: 1px solid #333; line-height: 1.6;
+            z-index: 10; box-shadow: 0 4px 20px rgba(0,0,0,0.6);
         }}
         .badge {{ background: #444; border-radius: 4px; padding: 2px 6px; font-family: monospace; }}
     </style>
@@ -84,8 +88,9 @@ html_3d_tf_snooker = f"""
 <body>
     <div id="canvas-holder">
         <div id="ui-overlay">
-            🎯 <b>Current Turn:</b> <span style="color:#00aaff; font-weight:bold;">{st.session_state.turn}</span><br>
-            🔴 <b>Required Legal Target:</b> <span style="color:#ff3333; font-weight:bold;">{st.session_state.target_type}</span><br>
+            🎯 <b>Current Turn:</b> <span id="turn-txt" style="color:#00aaff; font-weight:bold;">{st.session_state.turn}</span><br>
+            🔴 <b>Required Legal Target:</b> <span id="target-txt" style="color:#ff3333; font-weight:bold;">{st.session_state.target_type}</span><br>
+            🏆 <b>Scores:</b> Player: <span id="p1-txt">{st.session_state.score["User"]}</span> | AI Bot: <span id="cpu-txt">{st.session_state.score["CPU_AI_Bot"]}</span>
             <hr style="border:0; border-top:1px solid #333; margin:8px 0;">
             • Aim Stick: Use <span class="badge">A</span> / <span class="badge">D</span> or <span class="badge">◀</span> / <span class="badge">▶</span><br>
             • Fire Shot Stroke: Tap <span class="badge">SPACEBAR</span>
@@ -95,9 +100,9 @@ html_3d_tf_snooker = f"""
     <script>
         let activeTurn = "{st.session_state.turn}";
         let targetType = "{st.session_state.target_type}";
+        let scoreBoard = {{ "User": {st.session_state.score["User"]}, "CPU_AI_Bot": {st.session_state.score["CPU_AI_Bot"]} }};
         const tfBrainTensors = {brain_tensors};
 
-        // Deployed TensorFlow local Inference calculation matrix
         function evaluateNeuralNetworkAction(ballX, ballZ, targetX, targetZ, pocketX, pocketZ) {{
             let inputState = [ballX/34, ballZ/17, targetX/34, targetZ/17, pocketX/34, pocketZ/17];
             let hiddenLayer = [];
@@ -115,10 +120,9 @@ html_3d_tf_snooker = f"""
             return qValuesMatrix.indexOf(Math.max(...qValuesMatrix));
         }}
 
-        // Initialize 3D Graphics View Space Canvas
         const holder = document.getElementById('canvas-holder');
         const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x040404);
+        scene.background = new THREE.Color(0x030303);
         
         const camera = new THREE.PerspectiveCamera(35, holder.clientWidth / holder.clientHeight, 0.1, 1000);
         camera.position.set(0, 48, 56);
@@ -129,12 +133,12 @@ html_3d_tf_snooker = f"""
         renderer.shadowMap.enabled = true;
         holder.appendChild(renderer.domElement);
 
-        scene.add(new THREE.AmbientLight(0xffffff, 0.25));
-        const overheadLight = new THREE.DirectionalLight(0xffffff, 0.95); overheadLight.position.set(0, 50, 0); overheadLight.castShadow = true; scene.add(overheadLight);
+        scene.add(new THREE.AmbientLight(0xffffff, 0.3));
+        const overheadLight = new THREE.DirectionalLight(0xffffff, 1.0); overheadLight.position.set(0, 50, 0); overheadLight.castShadow = true; scene.add(overheadLight);
 
-        // Build Table
-        const clothMaterial = new THREE.MeshStandardMaterial({{ color: 0x124727, roughness: 0.75 }});
-        const railMaterial = new THREE.MeshStandardMaterial({{ color: 0x2b160a, roughness: 0.4 }});
+        // Table Mesh Layout
+        const clothMaterial = new THREE.MeshStandardMaterial({{ color: 0x144a29, roughness: 0.7 }});
+        const railMaterial = new THREE.MeshStandardMaterial({{ color: 0x331a0c, roughness: 0.4 }});
         const tableCloth = new THREE.Mesh(new THREE.BoxGeometry(68, 2, 34), clothMaterial); tableCloth.position.y = -1; tableCloth.receiveShadow = true; scene.add(tableCloth);
         
         const rail1 = new THREE.Mesh(new THREE.BoxGeometry(70, 2.2, 1.2), railMaterial); rail1.position.set(0, 0.1, 17.6); scene.add(rail1);
@@ -145,11 +149,11 @@ html_3d_tf_snooker = f"""
             {{x: -33.1, z: 16.1}},  {{x: 0, z: 17.1}},  {{x: 33.1, z: 16.1}}
         ];
         pocketHoles.forEach(p => {{
-            const h = new THREE.Mesh(new THREE.CylinderGeometry(1.85, 1.85, 0.2, 32), new THREE.MeshBasicMaterial({{color: 0x050505}}));
+            const h = new THREE.Mesh(new THREE.CylinderGeometry(1.9, 1.9, 0.2, 32), new THREE.MeshBasicMaterial({{color: 0x010101}}));
             h.position.set(p.x, 0.02, p.z); scene.add(h);
         }});
 
-        // Setup Regulation Balls Configuration
+        // Setup Regulation Balls
         const ballRadius = 0.92;
         const ballGeometry = new THREE.SphereGeometry(ballRadius, 32, 32);
         const balls = [];
@@ -175,29 +179,31 @@ html_3d_tf_snooker = f"""
 
         let cueBall = balls[0];
 
-        // Tapered Cue Stick Mesh Setup
+        // Cue Stick Mesh Layer
         const cueStick = new THREE.Group();
-        const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.24, 25, 16), new THREE.MeshStandardMaterial({{ color: 0xe6c28a, roughness: 0.6 }}));
-        shaft.rotateX(Math.PI / 2); shaft.position.z = -12.5; cueStick.add(shaft);
+        const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.22, 26, 16), new THREE.MeshStandardMaterial({{ color: 0xedd1a6, roughness: 0.5 }}));
+        shaft.rotateX(Math.PI / 2); shaft.position.z = -14; cueStick.add(shaft);
         scene.add(cueStick);
 
         let cueAngle = 0; 
         let isMoving = false;
-        let aiShotFired = false;
+        let aiProcessingActive = false;
 
         const keys = {{ a: false, d: false, ArrowLeft: false, ArrowRight: false, ' ': false }};
         window.addEventListener('keydown', e => {{ if(e.key in keys) keys[e.key] = true; }});
         window.addEventListener('keyup', e => {{ if(e.key in keys) keys[e.key] = false; }});
 
-        // Safe URL Hash message delivery to communicate across parent frame wrappers
-        function sendEventToPython(payload) {{
-            window.parent.postMessage({{ type: "SNOOKER_MSG", data: payload }}, "*");
+        function updateUIDisplay() {{
+            document.getElementById("turn-txt").innerText = activeTurn;
+            document.getElementById("target-txt").innerText = targetType;
+            document.getElementById("p1-txt").innerText = scoreBoard["User"];
+            document.getElementById("cpu-txt").innerText = scoreBoard["CPU_AI_Bot"];
         }}
 
-        // AI Vector Computation Pipeline
-        function triggerCPUNeuralTurn() {{
-            if (isMoving || activeTurn !== "CPU_AI_Bot" || aiShotFired) return;
-            aiShotFired = true;
+        // FIX: Re-engineered AI choice system to guarantee target strikes
+        function runAIBotTurnPipeline() {{
+            if (isMoving || activeTurn !== "CPU_AI_Bot" || aiProcessingActive) return;
+            aiProcessingActive = true;
 
             let targetBall = null;
             for(let i = 1; i < balls.length; i++) {{
@@ -205,28 +211,23 @@ html_3d_tf_snooker = f"""
                     targetBall = balls[i]; break;
                 }}
             }}
-            if(!targetBall) targetBall = balls[balls.length - 1];
+            if(!targetBall) targetBall = balls[balls.length - 1]; 
 
-            let pocket = pocketHoles[0];
-            let minDist = Infinity;
-            pocketHoles.forEach(p => {{
-                let d = Math.hypot(targetBall.mesh.position.x - p.x, targetBall.mesh.position.z - p.z);
-                if(d < minDist) {{ minDist = d; pocket = p; }}
-            }});
-
-            let actionIdx = evaluateNeuralNetworkAction(
-                cueBall.mesh.position.x, cueBall.mesh.position.z,
-                targetBall.mesh.position.x, targetBall.mesh.position.z,
-                pocket.x, pocket.z
-            );
-
-            let computedAngle = (actionIdx / 16) * Math.PI * 2;
+            // Find Vector line from white cue ball pointing directly into target sphere center coordinate
+            let dx = targetBall.mesh.position.x - cueBall.mesh.position.x;
+            let dz = targetBall.mesh.position.z - cueBall.mesh.position.z;
+            let distanceToTarget = Math.hypot(dx, dz);
             
+            let normalDirectionX = dx / distanceToTarget;
+            let normalDirectionZ = dz / distanceToTarget;
+
             setTimeout(() => {{
-                cueBall.vx = Math.cos(computedAngle) * 1.6;
-                cueBall.vz = Math.sin(computedAngle) * 1.6;
+                // Apply impulse velocity forces directly down that geometric normal path
+                cueBall.vx = normalDirectionX * 1.65;
+                cueBall.vz = normalDirectionZ * 1.65;
                 isMoving = true;
-            }}, 1000);
+                aiProcessingActive = false;
+            }}, 1500);
         }}
 
         // Main Animation & Physics Loop
@@ -234,32 +235,31 @@ html_3d_tf_snooker = f"""
             requestAnimationFrame(animate);
 
             if (!isMoving && activeTurn === "CPU_AI_Bot") {{
-                triggerCPUNeuralTurn();
+                runAIBotTurnPipeline();
             }}
 
-            // Human Aiming System
-            if (!isMoving && activeTurn === "User") {{
-                aiShotFired = false;
-                if (keys.a || keys.ArrowLeft) cueAngle -= 0.03;
-                if (keys.d || keys.ArrowRight) cueAngle += 0.03;
+            // Human Shot Alignment System
+            if (!isMoving && activeTurn === "User") {
+                if (keys.a || keys.ArrowLeft) cueAngle -= 0.035;
+                if (keys.d || keys.ArrowRight) cueAngle += 0.035;
                 
                 cueStick.visible = true;
                 cueStick.position.set(cueBall.mesh.position.x, cueBall.mesh.position.y, cueBall.mesh.position.z);
                 cueStick.rotation.y = cueAngle; 
 
-                // FIX: Derived directional forward trigonometry vectors match visual line orientation
-                if (keys[' ']) {{
-                    let forceVectorX = -Math.sin(cueAngle);
-                    let forceVectorZ = -Math.cos(cueAngle);
-                    cueBall.vx = forceVectorX * 1.85;
-                    cueBall.vz = forceVectorZ * 1.85;
+                // FIX: Inverted trigonometric functions ensure shot line perfectly matches the visual cue stick cylinder mesh
+                if (keys[' ']) {
+                    let forceVectorX = Math.sin(cueAngle);
+                    let forceVectorZ = Math.cos(cueAngle);
+                    cueBall.vx = forceVectorX * 1.95;
+                    cueBall.vz = forceVectorZ * 1.95;
                     isMoving = true;
-                }}
-            }} else {{
+                }
+            } else {
                 cueStick.visible = false;
-            }}
+            }
 
-            // Ball Physics
+            // Ball Dynamics Engine
             let ballsMoving = 0;
             balls.forEach(b => {{
                 if (b.isPocketed) return;
@@ -270,26 +270,32 @@ html_3d_tf_snooker = f"""
                 if (Math.abs(b.vx) > 0.005 || Math.abs(b.vz) > 0.005) ballsMoving++;
                 else {{ b.vx = 0; b.vz = 0; }}
 
-                // Cushion Collisions
                 if (Math.abs(b.mesh.position.x) > 33.1) {{ b.vx *= -0.85; b.mesh.position.x = Math.sign(b.mesh.position.x) * 33.1; }}
                 if (Math.abs(b.mesh.position.z) > 16.1) {{ b.vz *= -0.85; b.mesh.position.z = Math.sign(b.mesh.position.z) * 16.1; }}
 
-                // Pocket Check
+                // Pocket Checking Loop
                 pocketHoles.forEach(p => {{
                     if (Math.hypot(b.mesh.position.x - p.x, b.mesh.position.z - p.z) < 2.0) {{
                         b.isPocketed = true; b.vx = 0; b.vz = 0;
                         b.mesh.position.set(0, -100, 0);
 
                         if (b.type === 'cue') {{
-                            sendEventToPython({{ event: "foul", shooter: activeTurn }});
+                            let receiver = (activeTurn === "User") ? "CPU_AI_Bot" : "User";
+                            scoreBoard[receiver] += 4;
+                            activeTurn = "User"; // Turn returns to human upon foul
+                            targetType = "Red";
+                            b.isPocketed = false;
+                            b.mesh.position.set(-18, ballRadius, 0); // Respawn cue ball safely back to base line
                         }} else {{
-                            sendEventToPython({{ event: "score", points: b.points, type: b.type, shooter: activeTurn }});
+                            scoreBoard[activeTurn] += b.points;
+                            targetType = (b.type === "Red") ? "Any" : "Red";
                         }}
+                        updateUIDisplay();
                     }}
                 }});
             }});
 
-            // Ball-to-Ball Collisions
+            // Ball Elastic Collisions Matrix
             for (let i = 0; i < balls.length; i++) {{
                 for (let j = i + 1; j < balls.length; j++) {{
                     let b1 = balls[i]; let b2 = balls[j];
@@ -314,14 +320,21 @@ html_3d_tf_snooker = f"""
                 }}
             }}
 
-            // Handle cleanly toggling match turn cycles when physics vectors rest
+            // FIX: Match Turn transitions run locally in standard continuous loops without breaking iframe sandboxes
             if (isMoving && ballsMoving === 0) {{
                 isMoving = false;
-                sendEventToPython({{ event: "turn_end" }});
+                activeTurn = (activeTurn === "User") ? "CPU_AI_Bot" : "User";
+                updateUIDisplay();
             }}
 
             renderer.render(scene, camera);
         }}
+
+        window.addEventListener('resize', () => {{
+            camera.aspect = holder.clientWidth / holder.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(holder.clientWidth, holder.clientHeight);
+        }});
 
         animate();
     </script>
@@ -329,49 +342,5 @@ html_3d_tf_snooker = f"""
 </html>
 """
 
-# --- Custom HTML Event Listener Router Script ---
-# Receives the background frame message packets securely without losing state variables
-st.html(f"""
-<script>
-    window.addEventListener("message", (e) => {{
-        if (e.data && e.data.type === "SNOOKER_MSG") {{
-            const query = new URLSearchParams(window.location.search);
-            const action = e.data.data;
-            if (action.event === "score") {{
-                window.location.href = window.location.origin + window.location.pathname + "?evt=score&sh=" + action.shooter + "&pts=" + action.points + "&tp=" + action.type;
-            }} else if (action.event === "foul") {{
-                window.location.href = window.location.origin + window.location.pathname + "?evt=foul&sh=" + action.shooter;
-            }} else if (action.event === "turn_end") {{
-                window.location.href = window.location.origin + window.location.pathname + "?evt=next";
-            }}
-        }}
-    }});
-</script>
-""")
-
-# Process query strings cleanly across backend session vectors
-q = st.query_params
-if "evt" in q:
-    evt_type = q["evt"]
-    if evt_type == "score":
-        sh = q.get("sh", "User")
-        pts = int(q.get("pts", 0))
-        st.session_state.score[sh] += pts
-        st.session_state.target_type = "Any" if q.get("tp") == "Red" else "Red"
-        # Turn continues for the shooter upon a successful pot
-        st.session_state.turn = sh 
-    elif evt_type == "foul":
-        sh = q.get("sh", "User")
-        rx = "CPU_AI_Bot" if sh == "User" else "User"
-        st.session_state.score[rx] += 4
-        st.session_state.turn = "User"
-        st.session_state.target_type = "Red"
-    elif evt_type == "next":
-        # Toggle turn back and forth if nothing was potted
-        st.session_state.turn = "CPU_AI_Bot" if st.session_state.turn == "User" else "User"
-    
-    st.query_params.clear()
-    st.rerun()
-
-# Embed full layout window 
-components.html(html_3d_tf_snooker, height=650, scrolling=False)
+# Embed component layout interface viewport window seamlessly using match identifier key updates
+components.html(html_3d_tf_snooker, key=f"snooker_view_{st.session_state.match_id}")

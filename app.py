@@ -1,14 +1,16 @@
 import streamlit as st
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras import layers, models
 import time
 import math
 
-# Page Configuration
-st.set_page_config(page_title="TF DQN Snooker Engine", layout="wide")
+# Force TensorFlow to execute strictly in CPU-isolation mode to prevent multi-threading memory crashes on Streamlit Cloud
+tf.config.set_visible_devices([], 'GPU')
 
-# Game Constants
+# Page Initialization
+st.set_page_config(page_title="TF 2.13 Snooker Engine", layout="wide")
+
+# Simulation Constants
 TABLE_WIDTH = 800
 TABLE_HEIGHT = 400
 BALL_RADIUS = 10
@@ -26,16 +28,15 @@ COLOR_MAP = {
     "green": "#00FF00", "black": "#000000"
 }
 
-# --- State Initialization ---
+# --- State System Framework ---
 if "balls" not in st.session_state:
     st.session_state.balls = []
     st.session_state.score = {"Player": 0, "AI": 0}
     st.session_state.turn = "Player"
     st.session_state.game_over = False
-    st.session_state.status_msg = "Your turn! Choose an angle and power to strike."
     st.session_state.training_episodes = 0
     
-    # Initialize Core Ball Setup
+    # Position Elements
     st.session_state.balls.append({"id": "cue", "x": 200.0, "y": 200.0, "vx": 0.0, "vy": 0.0, "color": COLOR_MAP["cue"]})
     object_balls = [
         ("red", 550.0, 200.0), ("red", 570.0, 190.0), ("red", 570.0, 210.0),
@@ -44,23 +45,39 @@ if "balls" not in st.session_state:
     for b_type, x, y in object_balls:
         st.session_state.balls.append({"id": b_type, "x": x, "y": y, "vx": 0.0, "vy": 0.0, "color": COLOR_MAP[b_type]})
 
-# --- TensorFlow From-Scratch DQN Brain ---
-# 8 Inputs: Cue X, Cue Y, Target closest X, Target closest Y, Closet pocket X, Pocket Y, Enemy Score, Your Score
-# 16 Outputs: Categorized actions representing 16 distinct shooting angles around the circle
-def build_dqn_model():
-    model = models.Sequential([
-        layers.Input(shape=(8,)),
-        layers.Dense(64, activation='relu'),
-        layers.Dense(64, activation='relu'),
-        layers.Dense(16, activation='linear') # 16 discrete firing vectors
-    ])
-    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.005), loss='mse')
-    return model
+# --- Native TensorFlow Brain Architecture ---
+# 8 Inputs (Positions / Match Metadata) -> 16 Linear Q-Value Firing Outputs 
+class PureTFBrain(tf.Module):
+    def __init__(self):
+        super().__init__()
+        # Initialize Dense Layers explicitly using float32 arrays to bypass native graph errors
+        self.W1 = tf.Variable(tf.random.normal([8, 64], stddev=0.1, dtype=tf.float32), name="W1")
+        self.b1 = tf.Variable(tf.zeros([64], dtype=tf.float32), name="b1")
+        self.W2 = tf.Variable(tf.random.normal([64, 16], stddev=0.1, dtype=tf.float32), name="W2")
+        self.b2 = tf.Variable(tf.zeros([16], dtype=tf.float32), name="b2")
+        self.optimizer = tf.optimizers.Adam(learning_rate=0.005)
 
-if "dqn_brain" not in st.session_state:
-    st.session_state.dqn_brain = build_dqn_model()
+    @tf.Module.with_name_scope
+    def predict(self, state_tensor):
+        layer_1 = tf.nn.relu(tf.matmul(state_tensor, self.W1) + self.b1)
+        q_values = tf.matmul(layer_1, self.W2) + self.b2
+        return q_values
 
-# --- Physics Processing Pipeline ---
+    def train_step(self, state, action, target_val):
+        with tf.GradientTape() as tape:
+            q_values = self.predict(state)
+            # Gather specific Q-Value linked to chosen discrete path angle index
+            one_hot_mask = tf.one_hot(action, 16, dtype=tf.float32)
+            predicted_q = tf.reduce_sum(q_values * one_hot_mask, axis=1)
+            loss = tf.reduce_mean(tf.square(tf.stop_gradient(target_val) - predicted_q))
+            
+        gradients = tape.gradient(loss, self.trainable_variables)
+        self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
+
+if "tf_brain" not in st.session_state:
+    st.session_state.tf_brain = PureTFBrain()
+
+# --- Vector Mechanics Engine ---
 def resolve_collisions():
     balls = st.session_state.balls
     for b in balls:
@@ -102,7 +119,7 @@ def run_physics_loop(rendering_element=None):
     scored_this_turn = 0
     scratched = False
     
-    for _ in range(150): # Limiting execution cycles per turn to prevent hangs
+    for _ in range(150):
         moving = False
         for b in balls:
             b["x"] += b["vx"]
@@ -115,7 +132,6 @@ def run_physics_loop(rendering_element=None):
             
         resolve_collisions()
         
-        # Track Pocketings
         active_balls = []
         for b in balls:
             is_pocketed = False
@@ -146,7 +162,7 @@ def run_physics_loop(rendering_element=None):
         st.session_state.balls.append({"id": "cue", "x": 200.0, "y": 200.0, "vx": 0.0, "vy": 0.0, "color": COLOR_MAP["cue"]})
     return scored_this_turn, scratched
 
-# --- Feature Extraction & TensorFlow Step ---
+# --- Feature Vector Extraction Matrix ---
 def get_current_state_vector():
     balls = st.session_state.balls
     cue = next((b for b in balls if b["id"] == "cue"), {"x": 200.0, "y": 200.0})
@@ -160,69 +176,64 @@ def get_current_state_vector():
         
     closest_pocket = min(POCKETS, key=lambda p: math.hypot(p[0] - ox, p[1] - oy))
     
-    return np.array([[ 
+    state_array = np.array([[ 
         cue["x"] / TABLE_WIDTH, cue["y"] / TABLE_HEIGHT,
         ox / TABLE_WIDTH, oy / TABLE_HEIGHT,
         closest_pocket[0] / TABLE_WIDTH, closest_pocket[1] / TABLE_HEIGHT,
         st.session_state.score["AI"] / 10.0, st.session_state.score["Player"] / 10.0
     ]], dtype=np.float32)
+    return tf.convert_to_tensor(state_array, dtype=tf.float32)
 
 def execute_tf_ai_turn(visualize=True):
     balls = st.session_state.balls
     cue = next((b for b in balls if b["id"] == "cue"), None)
-    if not cue: return 0, False
+    if not cue: return
     
     state = get_current_state_vector()
     
-    # Epsilon-greedy exploration vs exploitation
+    # Continuous Exploration Balance
     epsilon = max(0.1, 1.0 - (st.session_state.training_episodes * 0.05))
     if np.random.rand() < epsilon:
         action_idx = np.random.randint(0, 16)
     else:
-        q_values = st.session_state.dqn_brain.predict(state, verbose=0)
-        action_idx = np.argmax(q_values[0])
+        q_vals = st.session_state.tf_brain.predict(state)
+        action_idx = int(tf.argmax(q_vals[0]).numpy())
         
-    # Translate action integer into an operational vector angle
     target_angle = (action_idx / 16.0) * 2 * math.pi
-    power = 15.0
-    cue["vx"] = math.cos(target_angle) * power
-    cue["vy"] = math.sin(target_angle) * power
+    cue["vx"] = math.cos(target_angle) * 15.0
+    cue["vy"] = math.sin(target_angle) * 15.0
     
-    # Run dynamic system simulation
     scored, scratched = run_physics_loop(render_placeholder if visualize else None)
     
-    # Reward engineering matrix
-    reward = (scored * 5.0) - (0.5 if scratched else 0.0) + (0.1 if scored > 0 else -0.1)
+    # Reward Math Logic
+    reward = (scored * 5.0) - (1.0 if scratched else 0.0) + (0.1 if scored > 0 else -0.1)
     
-    # Custom Gradient descent update via backpropagation
     next_state = get_current_state_vector()
-    target_q = reward + 0.95 * np.max(st.session_state.dqn_brain.predict(next_state, verbose=0)[0])
+    next_q_vals = st.session_state.tf_brain.predict(next_state)
+    max_next_q = tf.reduce_max(next_q_vals[0])
     
-    updated_q_profile = st.session_state.dqn_brain.predict(state, verbose=0)
-    updated_q_profile[0][action_idx] = target_q
+    target_q = tf.convert_to_tensor([reward + 0.95 * max_next_q.numpy()], dtype=tf.float32)
     
-    # Train the model on the single step experience
-    st.session_state.dqn_brain.fit(state, updated_q_profile, epochs=1, verbose=0)
-    return scored, scratched
+    # Safe backpropagation training optimization
+    st.session_state.tf_brain.train_step(state, tf.convert_to_tensor([action_idx], dtype=tf.int32), target_q)
 
-# --- Dynamic Canvas Rendering Markup ---
+# --- Responsive Canvas Generation Markup ---
 def render_canvas(element_handle):
     balls_js = ", ".join([f'{{x: {b["x"]}, y: {b["y"]}, c: "{b["color"]}"}}' for b in st.session_state.balls])
     pockets_js = ", ".join([f'{{x: {p[0]}, y: {p[1]}}}' for p in POCKETS])
     
     html_data = f"""
     <div style="text-align: center;">
-        <canvas id="canvas" width="{TABLE_WIDTH}" height="{TABLE_HEIGHT}" style="background-color:#1e5631; border:10px solid #4a2c11; border-radius:5px;"></canvas>
+        <canvas id="snookerCanvas" width="{TABLE_WIDTH}" height="{TABLE_HEIGHT}" style="background-color:#1e5631; border:12px solid #4a2c11; border-radius:8px; box-shadow: 0px 4px 12px rgba(0,0,0,0.4);"></canvas>
     </div>
     <script>
-        var canvas = document.getElementById('canvas');
+        var canvas = document.getElementById('snookerCanvas');
         var ctx = canvas.getContext('2d');
         var balls = [{balls_js}];
         var pockets = [{pockets_js}];
         
         ctx.clearRect(0,0, {TABLE_WIDTH}, {TABLE_HEIGHT});
         
-        // Render Pockets
         pockets.forEach(p => {{
             ctx.beginPath();
             ctx.arc(p.x, p.y, {POCKET_RADIUS}, 0, 2*Math.PI);
@@ -230,7 +241,6 @@ def render_canvas(element_handle):
             ctx.fill();
         }});
         
-        // Render Balls
         balls.forEach(b => {{
             ctx.beginPath();
             ctx.arc(b.x, b.y, {BALL_RADIUS}, 0, 2*Math.PI);
@@ -244,12 +254,11 @@ def render_canvas(element_handle):
     """
     element_handle.html(html_data, height=440)
 
-# --- App UI Layout Framework ---
-st.title("🧠 Self-Training TensorFlow DQN Snooker App")
-st.markdown("This instance runs an independent deep reinforcement learning loop inside Python 3.11 without cloud APIs.")
+# --- Layout Configuration ---
+st.title("🎱 TensorFlow (Python 3.10) DQN Snooker Engine")
+st.markdown("Thread-isolated neural optimization processing safely inside Streamlit Cloud Containers.")
 
-# Main Interactive UI controls
-tab1, tab2 = st.tabs(["🎮 Human vs AI Play Mode", "🏋️ Train TensorFlow Brain Live"])
+tab1, tab2 = st.tabs(["🎮 Active Play Deck", "🏋️ Train TensorFlow Weights"])
 
 with tab1:
     col1, col2 = st.columns([3, 1])
@@ -258,7 +267,7 @@ with tab1:
         st.write(f"**Turn:** `{st.session_state.turn}`")
         st.metric("Player Score", st.session_state.score["Player"])
         st.metric("AI Score", st.session_state.score["AI"])
-        st.caption(f"Exploration Rate (Epsilon): {max(0.1, 1.0 - (st.session_state.training_episodes * 0.05)):.2f}")
+        st.caption(f"Network Exploration Epsilon: {max(0.1, 1.0 - (st.session_state.training_episodes * 0.05)):.2f}")
         
     with col1:
         render_placeholder = st.empty()
@@ -277,36 +286,28 @@ with tab1:
                     st.session_state.turn = "AI"
                     st.rerun()
         else:
-            if st.button("🤖 Run Neural Network AI Move", type="primary", use_container_width=True):
-                st.session_state.status_msg = "TensorFlow checking state-space tensors..."
+            if st.button("🤖 Process AI Brain Calculation", type="primary", use_container_width=True):
                 execute_tf_ai_turn(visualize=True)
                 st.session_state.turn = "Player"
                 st.rerun()
 
 with tab2:
-    st.subheader("Train the Reinforcement Learning Agent")
-    st.markdown("Let the TensorFlow agent play rapid self-play sessions to learn pocket alignment vectors.")
-    episodes_to_run = st.number_input("Training Generations", min_value=1, max_value=50, value=5)
+    st.subheader("Train TensorFlow Vector Profiles")
+    episodes_to_run = st.number_input("Training Cycles", min_value=1, max_value=50, value=5)
     
-    if st.button("🚀 Start Self-Training Iteration Loop"):
+    if st.button("🚀 Run Fast Training Runs"):
         progress_bar = st.progress(0.0)
-        status_box = st.empty()
-        
         for ep in range(int(episodes_to_run)):
             st.session_state.training_episodes += 1
-            # Reset game variables for training iteration
             st.session_state.balls = [{"id": "cue", "x": 200.0, "y": 200.0, "vx": 0.0, "vy": 0.0, "color": COLOR_MAP["cue"]}]
             for b_type, x, y in [("red", 550.0, 200.0), ("yellow", 520.0, 150.0), ("black", 650.0, 200.0)]:
                 st.session_state.balls.append({"id": b_type, "x": x, "y": y, "vx": 0.0, "vy": 0.0, "color": COLOR_MAP[b_type]})
             
-            # Execute 5 rapid sequential shots per training generation
             for shot in range(5):
                 execute_tf_ai_turn(visualize=False)
-                
             progress_bar.progress((ep + 1) / episodes_to_run)
-            status_box.text(f"Completed Generation Match Series {ep+1}/{episodes_to_run} | Total Neural Training Count: {st.session_state.training_episodes}")
             
-        st.success("TensorFlow weights optimized based on results! Return to 'Play Mode' to test your trained agent.")
+        st.success(f"TensorFlow network optimized! Current Training Benchmark: {st.session_state.training_episodes}")
 
 if st.button("🔄 Full Engine System Reset"):
     for key in list(st.session_state.keys()):

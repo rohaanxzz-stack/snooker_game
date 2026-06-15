@@ -1,10 +1,11 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import numpy as np
 import tensorflow as tf
 import time
 import math
 
-# Force TensorFlow to execute strictly in CPU-isolation mode to prevent multi-threading memory crashes on Streamlit Cloud
+# Force TensorFlow to execute strictly in CPU mode to prevent threading crashes on Streamlit Cloud
 tf.config.set_visible_devices([], 'GPU')
 
 # Page Initialization
@@ -46,11 +47,9 @@ if "balls" not in st.session_state:
         st.session_state.balls.append({"id": b_type, "x": x, "y": y, "vx": 0.0, "vy": 0.0, "color": COLOR_MAP[b_type]})
 
 # --- Native TensorFlow Brain Architecture ---
-# 8 Inputs (Positions / Match Metadata) -> 16 Linear Q-Value Firing Outputs 
 class PureTFBrain(tf.Module):
     def __init__(self):
         super().__init__()
-        # Initialize Dense Layers explicitly using float32 arrays to bypass native graph errors
         self.W1 = tf.Variable(tf.random.normal([8, 64], stddev=0.1, dtype=tf.float32), name="W1")
         self.b1 = tf.Variable(tf.zeros([64], dtype=tf.float32), name="b1")
         self.W2 = tf.Variable(tf.random.normal([64, 16], stddev=0.1, dtype=tf.float32), name="W2")
@@ -66,7 +65,6 @@ class PureTFBrain(tf.Module):
     def train_step(self, state, action, target_val):
         with tf.GradientTape() as tape:
             q_values = self.predict(state)
-            # Gather specific Q-Value linked to chosen discrete path angle index
             one_hot_mask = tf.one_hot(action, 16, dtype=tf.float32)
             predicted_q = tf.reduce_sum(q_values * one_hot_mask, axis=1)
             loss = tf.reduce_mean(tf.square(tf.stop_gradient(target_val) - predicted_q))
@@ -191,7 +189,6 @@ def execute_tf_ai_turn(visualize=True):
     
     state = get_current_state_vector()
     
-    # Continuous Exploration Balance
     epsilon = max(0.1, 1.0 - (st.session_state.training_episodes * 0.05))
     if np.random.rand() < epsilon:
         action_idx = np.random.randint(0, 16)
@@ -205,7 +202,6 @@ def execute_tf_ai_turn(visualize=True):
     
     scored, scratched = run_physics_loop(render_placeholder if visualize else None)
     
-    # Reward Math Logic
     reward = (scored * 5.0) - (1.0 if scratched else 0.0) + (0.1 if scored > 0 else -0.1)
     
     next_state = get_current_state_vector()
@@ -213,17 +209,15 @@ def execute_tf_ai_turn(visualize=True):
     max_next_q = tf.reduce_max(next_q_vals[0])
     
     target_q = tf.convert_to_tensor([reward + 0.95 * max_next_q.numpy()], dtype=tf.float32)
-    
-    # Safe backpropagation training optimization
     st.session_state.tf_brain.train_step(state, tf.convert_to_tensor([action_idx], dtype=tf.int32), target_q)
 
-# --- Responsive Canvas Generation Markup ---
+# --- Version Safe Canvas Generation ---
 def render_canvas(element_handle):
     balls_js = ", ".join([f'{{x: {b["x"]}, y: {b["y"]}, c: "{b["color"]}"}}' for b in st.session_state.balls])
     pockets_js = ", ".join([f'{{x: {p[0]}, y: {p[1]}}}' for p in POCKETS])
     
     html_data = f"""
-    <div style="text-align: center;">
+    <div style="text-align: center; margin: 0; padding: 0;">
         <canvas id="snookerCanvas" width="{TABLE_WIDTH}" height="{TABLE_HEIGHT}" style="background-color:#1e5631; border:12px solid #4a2c11; border-radius:8px; box-shadow: 0px 4px 12px rgba(0,0,0,0.4);"></canvas>
     </div>
     <script>
@@ -252,11 +246,12 @@ def render_canvas(element_handle):
         }});
     </script>
     """
-    element_handle.html(html_data, height=440)
+    with element_handle:
+        components.html(html_data, height=440)
 
 # --- Layout Configuration ---
-st.title("🎱 TensorFlow (Python 3.10) DQN Snooker Engine")
-st.markdown("Thread-isolated neural optimization processing safely inside Streamlit Cloud Containers.")
+st.title("🎱 TensorFlow DQN Snooker Engine")
+st.markdown("Thread-isolated neural optimization processing inside Streamlit Cloud Containers.")
 
 tab1, tab2 = st.tabs(["🎮 Active Play Deck", "🏋️ Train TensorFlow Weights"])
 
@@ -270,7 +265,7 @@ with tab1:
         st.caption(f"Network Exploration Epsilon: {max(0.1, 1.0 - (st.session_state.training_episodes * 0.05)):.2f}")
         
     with col1:
-        render_placeholder = st.empty()
+        render_placeholder = st.container()
         render_canvas(render_placeholder)
         
         if st.session_state.turn == "Player":
